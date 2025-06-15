@@ -39,7 +39,29 @@ function source:complete(params, callback)
 			return
 		end
 
+		--- Key for allLocals
+		---@type {[string]: {node: TSNode}}
+		local scopes = {}
+
+		local row, col = unpack(params.context.cursor)
+		local cursor_node = tree:root():named_descendant_for_range(row, col, row, col)
+		if not cursor_node then
+			return
+		end
+
+		---@type {[string]: {result: lsp.CompletionItem, node: TSNode}}
+		local treeResults = {}
+
 		for id, node, _, _ in query:iter_captures(tree:root(), params.context.bufnr) do
+			-- if allLocals[node:id()] ~= nil then
+			-- 	table.insert(allLocals[node:id()].capture_ids, id)
+			-- else
+			-- 	allLocals[node:id()] = {
+			-- 		node = node,
+			-- 		capture_ids = { id },
+			-- 	}
+			-- end
+
 			local name = query.captures[id]
 			if vim.startswith(name, "local.definition") then
 				---@type lsp.CompletionItemKind|nil
@@ -79,9 +101,58 @@ function source:complete(params, callback)
 					},
 					kind = kind,
 				}
-				table.insert(results, result)
+				treeResults[node:id()] = { result = result, node = node }
+			end
+
+			if name == "local.scope" then
+				scopes[node:id()] = { node = node }
 			end
 			::continue::
+		end
+
+		---@type TSNode[]
+		local cursor_parent_scopes = {}
+
+		local node = cursor_node
+
+		print(vim.inspect(scopes), node:type())
+		while node do
+			if scopes[node:id()] ~= nil then
+				table.insert(cursor_parent_scopes, node)
+			end
+
+			-- cursor_parents[node:id()] = true
+			local newNode = node:parent()
+			if not newNode then
+				break
+			end
+			node = newNode
+		end
+
+		local actualResults = {}
+
+		---@param node TSNode
+		local function recurse_tree(node, startScope)
+			if scopes[node:id()] and node ~= startScope then
+				-- print("skipped scope: " .. ts.get_node_text(node, params.context.bufnr))
+				return
+			end
+			local result = treeResults[node:id()]
+			if result then
+				table.insert(actualResults, result.result)
+			end
+
+			for n in node:iter_children() do
+				recurse_tree(n, startScope)
+			end
+		end
+
+		for _, n in ipairs(cursor_parent_scopes) do
+			recurse_tree(n, n)
+		end
+
+		for _, result in ipairs(actualResults) do
+			table.insert(results, result)
 		end
 	end)
 
